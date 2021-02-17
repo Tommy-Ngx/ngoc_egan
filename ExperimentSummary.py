@@ -1,240 +1,297 @@
-'''Main function for UCI letter and spam datasets.
+'''GAIN function.
+Date: 2020/02/28
+Reference: J. Yoon, J. Jordon, M. van der Schaar, "GAIN: Missing Data 
+           Imputation using Generative Adversarial Nets," ICML, 2018.
+Paper Link: http://proceedings.mlr.press/v80/yoon18a/yoon18a.pdf
+Contact: jsyoon0823@gmail.com
 '''
 
 # Necessary packages
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from sklearn.model_selection import StratifiedShuffleSplit, cross_val_score
-from sklearn.tree import  DecisionTreeClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.linear_model import LogisticRegression
-from utils import normalization, renormalization, rounding
-import argparse
+import tensorflow as tf
 import numpy as np
-from sklearn.impute import SimpleImputer
-from sklearn.impute import KNNImputer
+import random
 from tqdm import tqdm
-from data_loader import data_loader
-from gain import gain
-from Egain import Egain
-from utils import rmse_loss
-import xlwt
+import copy
+import tensorflow.compat.v1 as tf1
+tf1.disable_v2_behavior()
 
-def main ():
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-    data_names = ['letter', 'spam']
-    # data_names = ['breasttissue','glass', 'thyroid']
-    # data with continuous feature and not originally missing
+from utils import normalization, renormalization, rounding
+from utils import xavier_init
+from utils import binary_sampler, uniform_sampler, sample_batch_index, sample_batch_binary
+from tensorflow.keras.models import Sequential
 
-    #data_names = ['balance','banknote','blood','breasttissue', 'climate','connectionistvowel',
-    #              'ecoli','glass','hillvalley','ionosphere', 'parkinsons','planning','seedst',
-    #              'thyroid','vehicle','vertebral','wine','yeast']
-    print(len(data_names))
-    miss_rate = 0.2
-    batch_size = 64
-    alpha = 100
-    iterations = 1000
-    n_times = 3
+def Egain(miss_data_x, gain_parameters):
+    '''Impute missing values in data_x
+  
+  Args:
+    - miss_data_x: missing data
+    - gain_parameters: GAIN network parameters:
+      - batch_size: Batch size
+      - alpha: Hyperparameter
+      - iterations: Iterations
+      
+  Returns:
+    - imputed_data: imputed data
+  '''
+    # Define mask matrix
+    m = 1 - np.isnan(miss_data_x)
 
-    wb_gain = xlwt.Workbook()
-    sh_rmse_gain = wb_gain.add_sheet("GAIN_rmse")
-    sh_acc_dct_gain = wb_gain.add_sheet("GAIN_acc_dct")
-    sh_acc_knn_gain = wb_gain.add_sheet("GAIN_acc_knn")
-    sh_acc_nb_gain = wb_gain.add_sheet("GAIN_acc_nb")
-    sh_acc_lr_gain = wb_gain.add_sheet("GAIN_acc_lr")
+    # System parameters
+    batch_size = gain_parameters['batch_size']
+    # hint_rate = gain_parameters['hint_rate']
+    alpha = gain_parameters['alpha']
+    iterations = gain_parameters['iterations']
 
-    wb_egain = xlwt.Workbook()
-    sh_rmse_egain = wb_egain .add_sheet("EGAIN_rmse")
-    sh_acc_dct_egain = wb_egain.add_sheet("EGAIN_acc_dct")
-    sh_acc_knn_egain = wb_egain.add_sheet("EGAIN_acc_knn")
-    sh_acc_nb_egain = wb_egain.add_sheet("EGAIN_acc_nb")
-    sh_acc_lr_egain = wb_egain.add_sheet("EGAIN_acc_lr")
+    loss_type = ['trickLogD', 'minimax', 'ls']
+    nloss = 3
+    beta = 1.0
+    ncandi = 3
+    nbest = 3
+    nD = 1  # # of discrim updates for each gen update
+    # Other parameters
+    no, dim = miss_data_x.shape
+    # Hidden state dimensions
+    h_dim = int(dim)
 
-    wb_mean = xlwt.Workbook()
-    sh_rmse_mean = wb_mean.add_sheet("MEAN_rmse")
-    sh_acc_dct_mean = wb_mean.add_sheet("MEAN_acc_dct")
-    sh_acc_knn_mean = wb_mean.add_sheet("MEAN_acc_knn")
-    sh_acc_nb_mean = wb_mean.add_sheet("MEAN_acc_nb")
-    sh_acc_lr_mean = wb_mean.add_sheet("MEAN_acc_lr")
+    # Normalization
+    norm_data, norm_parameters = normalization(miss_data_x)
+    norm_data_x = np.nan_to_num(norm_data, 0)
 
-    wb_knn = xlwt.Workbook()
-    sh_rmse_knn = wb_knn.add_sheet("KNN_rmse")
-    sh_acc_dct_knn = wb_knn.add_sheet("KNN_acc_dct")
-    sh_acc_knn_knn = wb_knn.add_sheet("KNN_acc_knn")
-    sh_acc_nb_knn = wb_knn.add_sheet("KNN_acc_nb")
-    sh_acc_lr_knn = wb_knn.add_sheet("KNN_acc_lr")
+    ## GAIN architecture
+    #tf.reset_default_graph()
+    tf.compat.v1.get_default_graph()
+    # Input placeholders
+    # Data vector
+    X = tf1.placeholder(tf.float32, shape=[None, dim])
+    # Mask vector
+    M = tf1.placeholder(tf.float32, shape=[None, dim])
+    # B vector
+    B = tf1.placeholder(tf.float32, shape=[None, dim])
 
-    for k in range(len(data_names)):
+    # Discriminator variables
+    D_W1 = tf.Variable(xavier_init([dim * 2, h_dim]))  # Data + Hint as inputs
+    D_b1 = tf.Variable(tf.zeros(shape=[h_dim]))
 
-        data_name = data_names[k]
-        gain_parameters = {'batch_size': batch_size,
-                         'alpha': alpha,
-                         'iterations': iterations}
-        ori_data_x, y, miss_data_x, m = data_loader(data_name, miss_rate)
+    D_W2 = tf.Variable(xavier_init([h_dim, h_dim]))
+    D_b2 = tf.Variable(tf.zeros(shape=[h_dim]))
 
-        print("Dataset: ", data_name)
+    D_W3 = tf.Variable(xavier_init([h_dim, dim]))
+    D_b3 = tf.Variable(tf.zeros(shape=[dim]))  # Multi-variate outputs
 
-        ###########################Mean imputation#################################
-        print('Mean imputation')
-        sh_rmse_mean.write(0, k, data_name)
-        sh_acc_dct_mean.write(0, k, data_name)
-        sh_acc_knn_mean.write(0, k, data_name)
-        sh_acc_nb_mean.write(0, k, data_name)
-        sh_acc_lr_mean.write(0, k, data_name)
+    theta_D = [D_W1, D_W2, D_W3, D_b1, D_b2, D_b3]
 
-        imp = SimpleImputer(missing_values=np.nan, strategy='mean')
-        imputed_data_x = imp.fit_transform(miss_data_x)
+    # Generator variables
+    # Data + Mask as inputs (Random noise is in missing components)
+    G_W1 = tf.Variable(xavier_init([dim * 2, h_dim]))
+    G_b1 = tf.Variable(tf.zeros(shape=[h_dim]))
 
-        sh_rmse_mean.write(1, k, np.round(rmse_loss(ori_data_x, imputed_data_x, m), 4))
+    G_W2 = tf.Variable(xavier_init([h_dim, h_dim]))
+    G_b2 = tf.Variable(tf.zeros(shape=[h_dim]))
 
-        # Normalize data and classification
-        imputed_data_x, _ = normalization(imputed_data_x)
+    G_W3 = tf.Variable(xavier_init([h_dim, dim]))
+    G_b3 = tf.Variable(tf.zeros(shape=[dim]))
 
-        scf = StratifiedShuffleSplit(n_splits=10)
-        # DCT classifier
-        score_dct_mean = cross_val_score(DecisionTreeClassifier(), imputed_data_x, y, cv=scf, scoring='accuracy')
-        sh_acc_dct_mean.write(1, k, np.round(np.mean(score_dct_mean), 4))
-        # KNN classifier
-        score_knn_mean = cross_val_score(KNeighborsClassifier(), imputed_data_x, y, cv=scf, scoring='accuracy')
-        sh_acc_knn_mean.write(1, k, np.round(np.mean(score_knn_mean), 4))
-        # NB classifier
-        score_nb_mean = cross_val_score(GaussianNB(), imputed_data_x, y, cv=scf, scoring='accuracy')
-        sh_acc_nb_mean.write(1, k, np.round(np.mean(score_nb_mean), 4))
-        # LR classifier
-        score_lr_mean = cross_val_score(LogisticRegression(max_iter=1000), imputed_data_x, y, cv=scf,
-                                        scoring='accuracy')
-        sh_acc_lr_mean.write(1, k, np.round(np.mean(score_lr_mean), 4))
+    theta_G = [G_W1, G_W2, G_W3, G_b1, G_b2, G_b3]
 
-        ###########################KNN imputation#################################
-        print('KNN imputation')
-        sh_rmse_knn.write(0, k, data_name)
-        sh_acc_dct_knn.write(0, k, data_name)
-        sh_acc_knn_knn.write(0, k, data_name)
-        sh_acc_nb_knn.write(0, k, data_name)
-        sh_acc_lr_knn.write(0, k, data_name)
+    ## GAIN functions
+    # Generator
+    def generator(x, m):
+        # Concatenate Mask and Data
+        inputs = tf.concat(values=[x, m], axis=1)
+        G_h1 = tf.nn.relu(tf.matmul(inputs, G_W1) + G_b1)
+        G_h2 = tf.nn.relu(tf.matmul(G_h1, G_W2) + G_b2)
+        # MinMax normalized output
+        G_prob = tf.nn.sigmoid(tf.matmul(G_h2, G_W3) + G_b3)
+        return G_prob
 
-        imp = KNNImputer(missing_values=np.nan)
-        imputed_data_x = imp.fit_transform(miss_data_x)
+    # Discriminator
+    def discriminator(x, h):
+        # Concatenate Data and Hint
+        inputs = tf.concat(values=[x, h], axis=1)
+        D_h1 = tf.nn.relu(tf.matmul(inputs, D_W1) + D_b1)
+        D_h2 = tf.nn.relu(tf.matmul(D_h1, D_W2) + D_b2)
+        D_logit = tf.matmul(D_h2, D_W3) + D_b3
+        D_prob = tf.nn.sigmoid(D_logit)
+        return D_prob
 
-        sh_rmse_knn.write(1, k, np.round(rmse_loss(ori_data_x, imputed_data_x, m), 4))
+    ## GAIN structure
+    # Hint vector
+    H = B * M + 0.5 * (1 - B)
+    # Generator
+    G_sample = generator(X, M)
+    D_prob_g = discriminator(X * M + G_sample * (1 - M), H)
 
-        # Normalize data and classification
-        imputed_data_x, _ = normalization(imputed_data_x)
+    # Combine with observed data
+    fake_X = tf1.placeholder(tf.float32, shape=[None, dim])
+    # Hint vector
+    Hat_X = X * M + fake_X * (1 - M)
 
-        scf = StratifiedShuffleSplit(n_splits=10)
-        # DCT classifier
-        score_dct_knn = cross_val_score(DecisionTreeClassifier(), imputed_data_x, y, cv=scf, scoring='accuracy')
-        sh_acc_dct_knn.write(1, k, np.round(np.mean(score_dct_knn), 4))
-        # KNN classifier
-        score_knn_knn = cross_val_score(KNeighborsClassifier(), imputed_data_x, y, cv=scf, scoring='accuracy')
-        sh_acc_knn_knn.write(1, k, np.round(np.mean(score_knn_knn), 4))
-        # NB classifier
-        score_nb_knn = cross_val_score(GaussianNB(), imputed_data_x, y, cv=scf, scoring='accuracy')
-        sh_acc_nb_knn.write(1, k, np.round(np.mean(score_nb_knn), 4))
-        # LR classifier
-        score_lr_knn = cross_val_score(LogisticRegression(max_iter=1000), imputed_data_x, y, cv=scf,
-                                        scoring='accuracy')
-        sh_acc_lr_knn.write(1, k, np.round(np.mean(score_lr_knn), 4))
+    # D loss
+    D_prob = discriminator(Hat_X, H)
+    D_loss_temp = -tf.reduce_mean((M * tf1.log(D_prob + 1e-8) + (1 - M) * tf1.log(1. - D_prob + 1e-8)))
+    D_loss = D_loss_temp
+    D_solver = tf1.train.AdamOptimizer().minimize(D_loss, var_list=theta_D)
 
-        ###########################GAIN imputation#################################
-        print('GAIN imputation')
-        sh_rmse_gain.write(0,k,data_name)
-        sh_acc_dct_gain.write(0,k,data_name)
-        sh_acc_knn_gain.write(0,k,data_name)
-        sh_acc_nb_gain.write(0,k,data_name)
-        sh_acc_lr_gain.write(0,k,data_name)
-        for i in tqdm(range(n_times)):
-            # Impute missing data
-            imputed_data_x = gain(miss_data_x, gain_parameters)
-            sh_rmse_gain.write(i + 1, k, np.round(rmse_loss(ori_data_x, imputed_data_x, m), 4))
+    # G loss
+    G_loss_logD = -tf.reduce_mean((1 - M) * tf1.log(D_prob_g + 1e-8))
+    G_loss_minimax = tf.reduce_mean((1 - M) * tf1.log(1. - D_prob_g + 1e-8))
+    G_loss_ls = tf1.reduce_mean((1-M)*tf1.square(D_prob_g - 1))
 
-            if data_name in ['letter', 'spam']:
-                continue
-            #Normalize data and classification
-            imputed_data_x,_ = normalization(imputed_data_x)
+    MSE_loss = tf.reduce_mean((M * X - M * G_sample) ** 2) / tf.reduce_mean(M)
 
-            scf = StratifiedShuffleSplit(n_splits=10)
-            #DCT classifier
-            score_dct_gain = cross_val_score(DecisionTreeClassifier(),imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_dct_gain.write(i+1, k, np.round(np.mean(score_dct_gain), 4))
-            #KNN classifier
-            score_knn_gain = cross_val_score(KNeighborsClassifier(),imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_knn_gain.write(i+1, k, np.round(np.mean(score_knn_gain), 4))
-            #NB classifier
-            score_nb_gain = cross_val_score(GaussianNB(),imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_nb_gain.write(i+1, k, np.round(np.mean(score_nb_gain), 4))
-            #LR classifier
-            score_lr_gain = cross_val_score(LogisticRegression(max_iter=1000),imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_lr_gain.write(i+1, k, np.round(np.mean(score_lr_gain), 4))
+    G_loss_logD_all = G_loss_logD + alpha * MSE_loss
+    G_loss_minimax_all = G_loss_minimax + alpha * MSE_loss
+    G_loss_ls_all = G_loss_ls + alpha * MSE_loss
 
-        ###########################EGAIN imputation#################################
-        print('EGAIN imputation')
-        sh_rmse_egain.write(0,k,data_name)
-        sh_acc_dct_egain.write(0,k,data_name)
-        sh_acc_knn_egain.write(0,k,data_name)
-        sh_acc_nb_egain.write(0,k,data_name)
-        sh_acc_lr_egain.write(0,k,data_name)
+    G_solver_logD = tf1.train.AdamOptimizer().minimize(G_loss_logD_all, var_list=theta_G)
+    G_solver_minimax = tf1.train.AdamOptimizer().minimize(G_loss_minimax_all, var_list=theta_G)
+    G_solver_ls = tf1.train.AdamOptimizer().minimize(G_loss_ls_all, var_list=theta_G)
 
-        for i in tqdm(range(n_times)):
+    # Fitness function
+    Fq_score = tf.reduce_mean((1 - M) * D_prob)
+    Fd_score = - tf1.log(tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[0])))
+                        + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[1])))
+                        + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[2])))
+                        + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[3])))
+                        + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[4])))
+                        + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[5])))
+                        )
 
-            imputed_data_x = Egain(miss_data_x, gain_parameters)
-            sh_rmse_egain.write(i + 1, k, np.round(rmse_loss(ori_data_x, imputed_data_x, m), 4))
+    ## Iterations
 
-            # Normalize data and classification
-            imputed_data_x, _ = normalization(imputed_data_x)
+    sess = tf1.Session()
+    # Start Iterations
 
-            scf = StratifiedShuffleSplit(n_splits=10)
-            # DCT classifier
-            score_dct_egain = cross_val_score(DecisionTreeClassifier(), imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_dct_egain.write(i + 1, k, np.round(np.mean(score_dct_egain), 4))
-            # KNN classifier
-            score_knn_egain = cross_val_score(KNeighborsClassifier(), imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_knn_egain.write(i + 1, k, np.round(np.mean(score_knn_egain), 4))
-            # NB classifier
-            score_nb_egain = cross_val_score(GaussianNB(), imputed_data_x, y, cv=scf, scoring='accuracy')
-            sh_acc_nb_egain.write(i + 1, k, np.round(np.mean(score_nb_egain), 4))
-            # LR classifier
-            score_lr_egain = cross_val_score(LogisticRegression(max_iter=1000), imputed_data_x, y, cv=scf,
-                                            scoring='accuracy')
-            sh_acc_lr_egain.write(i + 1, k, np.round(np.mean(score_lr_egain), 4))
+    gen_new_params = []
+    fitness_best = np.zeros(nbest)
+    fitness_candi = np.zeros(ncandi)
+    # for it in tqdm(range(iterations)):
+    for it in range(iterations):
+        # Train candidates G
+        if it == 0:
+            for can_i in range(0, ncandi):
+                sess.run(tf1.global_variables_initializer())
+                batch_idx = sample_batch_index(no, batch_size)
+                X_mb = norm_data_x[batch_idx, :]
+                M_mb = m[batch_idx, :]
+                Z_mb = uniform_sampler(0.0, 0.01, batch_size, dim)
+                X_mb = M_mb * X_mb + (1 - M_mb) * Z_mb
+                B_mb = sample_batch_binary(dim, batch_size)
+                gen_samples = sess.run([G_sample], feed_dict={X: X_mb, M: M_mb})[0]
+                fq_score, fd_score = sess.run([Fq_score, Fd_score],
+                                              feed_dict={X: X_mb, M: M_mb, fake_X: gen_samples, B: B_mb})
+                fitness = fq_score + beta * fd_score
+                fitness_best[can_i] = fitness
+                params = []
+                for param in theta_G:
+                    params.append(sess.run(param))
+                gen_new_params.append(params)
+            gen_best_params = copy.deepcopy(gen_new_params)
+        else:
+            # generate new candidate
+            gen_old_params = copy.deepcopy(gen_new_params)
+            # print(gen_old_params[0][-1])
+            # print(it)
+            for can_i in range(ncandi):
+                for type_i in range(nloss):
+                    batch_idx = sample_batch_index(no, batch_size)
+                    X_mb = norm_data_x[batch_idx, :]
+                    M_mb = m[batch_idx, :]
+                    Z_mb = uniform_sampler(0.0, 1.0, batch_size, dim)
+                    X_mb = M_mb * X_mb + (1 - M_mb) * Z_mb
+                    B_mb = sample_batch_binary(dim, batch_size)
+                    # Load and update weights
+                    for i in range(len(theta_G)):
+                        theta_G[i].load(gen_old_params[can_i][i], sess)
+                    loss = loss_type[type_i]
+                    if loss == 'trickLogD':
+                        sess.run([G_solver_minimax], feed_dict={X: X_mb, M: M_mb, B: B_mb})
+                    elif loss == 'minimax':
+                        sess.run([G_solver_logD], feed_dict={X: X_mb, M: M_mb, B: B_mb})
+                    elif loss == 'ls':
+                        sess.run([G_solver_ls], feed_dict={X: X_mb, M: M_mb, B: B_mb})
 
-    wb_gain.save('GAIN_results_20_3.xls')
-    wb_egain.save('EGAIN_results_20_3.xls')
-    wb_mean.save('MEAN_results_20_3.xls')
-    wb_knn.save('KNN_results_20_3.xls')
-if __name__ == '__main__':
-    main()
-    # Inputs for the main function
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument(
-    #   '--data_name',
-    #   choices=['letter','spam'],
-    #   default='spam',
-    #   type=str)
-    # parser.add_argument(
-    #   '--miss_rate',
-    #   help='missing data probability',
-    #   default=0.2,
-    #   type=float)
-    # parser.add_argument(
-    #   '--batch_size',
-    #   help='the number of samples in mini-batch',
-    #   default=128,
-    #   type=int)
-    # parser.add_argument(
-    #   '--alpha',
-    #   help='hyperparameter',
-    #   default=10,
-    #   type=float)
-    # parser.add_argument(
-    #   '--iterations',
-    #   help='number of training interations',
-    #   default=5000,
-    #   type=int)
-    #
-    # args = parser.parse_args()
-    #
-    # # Calls main function
-    # main(args)
+                    # calculate fitness score
+                    gen_samples = sess.run([G_sample], feed_dict={X: X_mb, M: M_mb})[0]
+                    fq_score, fd_score = sess.run([Fq_score, Fd_score],
+                                                  feed_dict={X: X_mb, M: M_mb, fake_X: gen_samples, B: B_mb})
+                    fitness = fq_score + beta * fd_score
+                    # print(fitness)
+                    gap = fitness_best - fitness
+                    if min(gap) < 0:
+                        idx_replace = np.argmin(gap)
+                        params = []
+                        for param in theta_G:
+                            params.append(sess.run(param))
+                        gen_best_params[idx_replace] = params
+                        fitness_best[idx_replace] = fitness
+
+                    if can_i * nloss + type_i < ncandi:
+                        idx = can_i * nloss + type_i
+                        params = []
+                        for param in theta_G:
+                            params.append(sess.run(param))
+                        gen_new_params[idx] = params
+                        fitness_candi[idx] = fitness
+                    else:
+                        gap = fitness_candi - fitness
+                        if min(gap) < 0:
+                            idx_replace = np.argmin(gap)
+                            params = []
+                            for param in theta_G:
+                                params.append(sess.run(param))
+                            gen_new_params[idx_replace] = params
+                            fitness_candi[idx_replace] = fitness
+        # Train D
+        for i in range(nD):
+            batch_idx = sample_batch_index(no, batch_size)
+            X_mb = norm_data_x[batch_idx, :]
+            M_mb = m[batch_idx, :]
+            Z_mb = uniform_sampler(0.0, 1.0, batch_size, dim)
+            X_mb = M_mb * X_mb + (1 - M_mb) * Z_mb
+            B_mb = sample_batch_binary(dim, batch_size)
+            # impute data for each candidat
+            for can_i in range(ncandi):
+                for w in range(len(theta_G)):
+                    theta_G[w].load(gen_new_params[can_i][w], sess)
+                if can_i == ncandi - 1:
+                    gen_samples_cani = sess.run([G_sample],
+                                                feed_dict={X: X_mb[can_i * batch_size // ncandi:],
+                                                           M: M_mb[can_i * batch_size // ncandi:]})[0]
+                else:
+                    gen_samples_cani = sess.run([G_sample],
+                                            feed_dict={X: X_mb[can_i*batch_size//ncandi:(can_i + 1) * batch_size // ncandi],
+                                                       M: M_mb[can_i*batch_size//ncandi:(can_i + 1) * batch_size // ncandi]})[0]
+                # print(gen_samples_cani.shape)
+                if can_i == 0:
+                    gen_samples = gen_samples_cani
+                else:
+                    gen_samples = np.append(gen_samples, gen_samples_cani, axis=0)
+            sess.run([D_solver], feed_dict={X: X_mb, M: M_mb, fake_X: gen_samples, B: B_mb})
+
+    ## Return imputed data
+
+    idx = np.argmax(fitness_best)
+    # print(idx)
+    for i in range(len(theta_G)):
+        theta_G[i].load(gen_best_params[idx][i], sess)
+
+    Z_mb = uniform_sampler(0.0, 0.01, no, dim)
+    M_mb = m
+    X_mb = norm_data_x
+    X_mb = M_mb * X_mb + (1 - M_mb) * Z_mb
+
+    imputed_data = sess.run([G_sample], feed_dict={X: X_mb, M: M_mb})[0]
+    sess.close()
+    imputed_data = m * norm_data_x + (1 - m) * imputed_data
+
+    # Renormalization
+    imputed_data = renormalization(imputed_data, norm_parameters)
+
+    # Rounding
+    imputed_data = rounding(imputed_data, miss_data_x)
+
+    return imputed_data

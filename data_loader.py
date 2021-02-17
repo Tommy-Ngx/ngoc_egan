@@ -47,6 +47,17 @@ def data_loader(data_name, miss_rate):
     file_name = 'data/' + data_name + '.csv'
     x = np.loadtxt(file_name, delimiter=",", skiprows=1)
     y = []
+
+  elif data_name in ['spam_full', 'breast_full']:
+    file_name = 'data/' + data_name + '.csv'
+    x = np.loadtxt(file_name, delimiter=",", skiprows=1)
+    print("begin ", x.shape)
+    y = np.array([x[-1]])
+    y = y.T
+    x = np.array([x[:-1]])
+    x = x[0,:,:]
+    print("x.shape & y", x.shape, y.shape)
+
   else:
     file_name = 'data/' + data_name + '.arff'
     data, _ = arff.loadarff(file_name)
