@@ -18,20 +18,26 @@ from data_loader import data_loader
 from gain import gain
 from utils import rmse_loss
 import xlwt
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow.compat.v1 as tf1
+tf1.disable_v2_behavior()
+
+
 def main ():
-    # data_names = ['letter', 'spam']
+    data_names = ['letter', 'spam']
     # data_names = ['breasttissue','glass', 'thyroid']
     # data with continuous feature and not originally missing
 
-    data_names = ['balance','banknote','blood','breasttissue', 'climate','connectionistvowel',
-                  'ecoli','glass','hillvalley','ionosphere', 'parkinsons','planning','seedst',
-                  'thyroid','vehicle','vertebral','wine','yeast']
+    #data_names = ['balance','banknote','blood','breasttissue', 'climate','connectionistvowel',
+    #              'ecoli','glass','hillvalley','ionosphere', 'parkinsons','planning','seedst',
+    #              'thyroid','vehicle','vertebral','wine','yeast']
     print(len(data_names))
-    miss_rate = 0.15
+    miss_rate = 0.2
     batch_size = 64
     alpha = 100
     iterations = 1000
-    n_times = 30
+    n_times = 3
     wb = xlwt.Workbook()
     sh_rmse = wb.add_sheet("GAIN_rmse")
     # sh_acc = wb.add_sheet("EGAIN_acc")

@@ -16,7 +16,10 @@ import copy
 from utils import normalization, renormalization, rounding
 from utils import xavier_init
 from utils import binary_sampler, uniform_sampler, sample_batch_index, sample_batch_binary
-
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow.compat.v1 as tf1
+tf1.disable_v2_behavior()
 
 def gain (miss_data_x, gain_parameters):
   '''Impute missing values in data_x
@@ -51,26 +54,26 @@ def gain (miss_data_x, gain_parameters):
   norm_data_x = np.nan_to_num(norm_data, 0)
   
   ## GAIN architecture
-  tf.reset_default_graph()
+  tf1.reset_default_graph()
   # Input placeholders
   # Data vector
-  X = tf.placeholder(tf.float32, shape = [None, dim])
+  X = tf1.placeholder(tf.float32, shape = [None, dim])
   # Mask vector 
-  M = tf.placeholder(tf.float32, shape = [None, dim])
+  M = tf1.placeholder(tf.float32, shape = [None, dim])
   # # Hint vector
   # H = tf.placeholder(tf.float32, shape = [None, dim])
   # B vector
-  B = tf.placeholder(tf.float32, shape = [None, dim])
+  B = tf1.placeholder(tf.float32, shape = [None, dim])
   
   # Discriminator variables
-  D_W1 = tf.Variable(xavier_init([dim*2, h_dim])) # Data + Hint as inputs
-  D_b1 = tf.Variable(tf.zeros(shape = [h_dim]))
+  D_W1 = tf1.Variable(xavier_init([dim*2, h_dim])) # Data + Hint as inputs
+  D_b1 = tf1.Variable(tf.zeros(shape = [h_dim]))
   
-  D_W2 = tf.Variable(xavier_init([h_dim, h_dim]))
-  D_b2 = tf.Variable(tf.zeros(shape = [h_dim]))
+  D_W2 = tf1.Variable(xavier_init([h_dim, h_dim]))
+  D_b2 = tf1.Variable(tf.zeros(shape = [h_dim]))
   
-  D_W3 = tf.Variable(xavier_init([h_dim, dim]))
-  D_b3 = tf.Variable(tf.zeros(shape = [dim]))  # Multi-variate outputs
+  D_W3 = tf1.Variable(xavier_init([h_dim, dim]))
+  D_b3 = tf1.Variable(tf.zeros(shape = [dim]))  # Multi-variate outputs
   
   theta_D = [D_W1, D_W2, D_W3, D_b1, D_b2, D_b3]
   
@@ -116,7 +119,7 @@ def gain (miss_data_x, gain_parameters):
   H = B*M + 0.5*(1-B)
   D_prob_g = discriminator(X * M + G_sample * (1 - M), H)
 
-  fake_X = tf.placeholder(tf.float32, shape = [None, dim])
+  fake_X = tf1.placeholder(tf.float32, shape = [None, dim])
   # Hint vector
   Hat_X = X * M + fake_X * (1 - M)
   # Discriminator
@@ -128,22 +131,22 @@ def gain (miss_data_x, gain_parameters):
   #                               / tf.reduce_mean(1-B)
   #
   # G_loss_temp = -tf.reduce_mean((1-B)*(1-M) * tf.log(D_prob + 1e-8)) / tf.reduce_mean(1-B)
-  D_loss_temp = -tf.reduce_mean((M * tf.log(D_prob + 1e-8) \
-                                + (1-M) * tf.log(1. - D_prob + 1e-8)))
+  D_loss_temp = -tf.reduce_mean((M * tf1.log(D_prob + 1e-8) \
+                                + (1-M) * tf1.log(1. - D_prob + 1e-8)))
 
-  G_loss_temp = -tf.reduce_mean((1-M) * tf.log(D_prob_g + 1e-8))
+  G_loss_temp = -tf.reduce_mean((1-M) * tf1.log(D_prob_g + 1e-8))
   MSE_loss = tf.reduce_mean((M * X - M * G_sample)**2) / tf.reduce_mean(M)
   
   D_loss = D_loss_temp
   G_loss = G_loss_temp + alpha * MSE_loss 
   
   ## GAIN solver
-  D_solver = tf.train.AdamOptimizer().minimize(D_loss, var_list=theta_D)
-  G_solver = tf.train.AdamOptimizer().minimize(G_loss, var_list=theta_G)
+  D_solver = tf1.train.AdamOptimizer().minimize(D_loss, var_list=theta_D)
+  G_solver = tf1.train.AdamOptimizer().minimize(G_loss, var_list=theta_G)
   
   ## Iterations
-  sess = tf.Session()
-  sess.run(tf.global_variables_initializer())
+  sess = tf1.Session()
+  sess.run(tf1.global_variables_initializer())
   gen_new_params = []
   params = []
   for param in theta_G:

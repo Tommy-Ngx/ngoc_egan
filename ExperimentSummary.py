@@ -21,20 +21,22 @@ from gain import gain
 from Egain import Egain
 from utils import rmse_loss
 import xlwt
+
 def main ():
-    # data_names = ['letter', 'spam']
+
+    data_names = ['letter', 'spam']
     # data_names = ['breasttissue','glass', 'thyroid']
     # data with continuous feature and not originally missing
 
-    data_names = ['balance','banknote','blood','breasttissue', 'climate','connectionistvowel',
-                  'ecoli','glass','hillvalley','ionosphere', 'parkinsons','planning','seedst',
-                  'thyroid','vehicle','vertebral','wine','yeast']
+    #data_names = ['balance','banknote','blood','breasttissue', 'climate','connectionistvowel',
+    #              'ecoli','glass','hillvalley','ionosphere', 'parkinsons','planning','seedst',
+    #              'thyroid','vehicle','vertebral','wine','yeast']
     print(len(data_names))
     miss_rate = 0.2
     batch_size = 64
     alpha = 100
     iterations = 1000
-    n_times = 30
+    n_times = 3
 
     wb_gain = xlwt.Workbook()
     sh_rmse_gain = wb_gain.add_sheet("GAIN_rmse")
