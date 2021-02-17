@@ -13,6 +13,10 @@
 # Necessary packages
 import numpy as np
 import tensorflow as tf
+import tensorflow.compat.v1 as tf1
+tf1.disable_v2_behavior()
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 
 def normalization (data):
@@ -130,7 +134,7 @@ def xavier_init(size):
   '''
   in_dim = size[0]
   xavier_stddev = 1. / tf.sqrt(in_dim / 2.)
-  return tf.random_normal(shape = size, stddev = xavier_stddev)
+  return tf1.random_normal(shape = size, stddev = xavier_stddev)
       
 
 def binary_sampler(p, rows, cols):

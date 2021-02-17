@@ -12,11 +12,16 @@ import numpy as np
 import random
 from tqdm import tqdm
 import copy
+import tensorflow.compat.v1 as tf1
+tf1.disable_v2_behavior()
+
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 from utils import normalization, renormalization, rounding
 from utils import xavier_init
 from utils import binary_sampler, uniform_sampler, sample_batch_index, sample_batch_binary
-
+from tensorflow.keras.models import Sequential
 
 def Egain(miss_data_x, gain_parameters):
     '''Impute missing values in data_x
@@ -56,14 +61,15 @@ def Egain(miss_data_x, gain_parameters):
     norm_data_x = np.nan_to_num(norm_data, 0)
 
     ## GAIN architecture
-    tf.reset_default_graph()
+    #tf.reset_default_graph()
+    tf.compat.v1.get_default_graph()
     # Input placeholders
     # Data vector
-    X = tf.placeholder(tf.float32, shape=[None, dim])
+    X = tf1.placeholder(tf.float32, shape=[None, dim])
     # Mask vector
-    M = tf.placeholder(tf.float32, shape=[None, dim])
+    M = tf1.placeholder(tf.float32, shape=[None, dim])
     # B vector
-    B = tf.placeholder(tf.float32, shape=[None, dim])
+    B = tf1.placeholder(tf.float32, shape=[None, dim])
 
     # Discriminator variables
     D_W1 = tf.Variable(xavier_init([dim * 2, h_dim]))  # Data + Hint as inputs
@@ -119,20 +125,20 @@ def Egain(miss_data_x, gain_parameters):
     D_prob_g = discriminator(X * M + G_sample * (1 - M), H)
 
     # Combine with observed data
-    fake_X = tf.placeholder(tf.float32, shape=[None, dim])
+    fake_X = tf1.placeholder(tf.float32, shape=[None, dim])
     # Hint vector
     Hat_X = X * M + fake_X * (1 - M)
 
     # D loss
     D_prob = discriminator(Hat_X, H)
-    D_loss_temp = -tf.reduce_mean((M * tf.log(D_prob + 1e-8) + (1 - M) * tf.log(1. - D_prob + 1e-8)))
+    D_loss_temp = -tf.reduce_mean((M * tf1.log(D_prob + 1e-8) + (1 - M) * tf1.log(1. - D_prob + 1e-8)))
     D_loss = D_loss_temp
-    D_solver = tf.train.AdamOptimizer().minimize(D_loss, var_list=theta_D)
+    D_solver = tf1.train.AdamOptimizer().minimize(D_loss, var_list=theta_D)
 
     # G loss
-    G_loss_logD = -tf.reduce_mean((1 - M) * tf.log(D_prob_g + 1e-8))
-    G_loss_minimax = tf.reduce_mean((1 - M) * tf.log(1. - D_prob_g + 1e-8))
-    G_loss_ls = tf.reduce_mean((1-M)*tf.square(D_prob_g - 1))
+    G_loss_logD = -tf.reduce_mean((1 - M) * tf1.log(D_prob_g + 1e-8))
+    G_loss_minimax = tf.reduce_mean((1 - M) * tf1.log(1. - D_prob_g + 1e-8))
+    G_loss_ls = tf1.reduce_mean((1-M)*tf1.square(D_prob_g - 1))
 
     MSE_loss = tf.reduce_mean((M * X - M * G_sample) ** 2) / tf.reduce_mean(M)
 
@@ -140,13 +146,13 @@ def Egain(miss_data_x, gain_parameters):
     G_loss_minimax_all = G_loss_minimax + alpha * MSE_loss
     G_loss_ls_all = G_loss_ls + alpha * MSE_loss
 
-    G_solver_logD = tf.train.AdamOptimizer().minimize(G_loss_logD_all, var_list=theta_G)
-    G_solver_minimax = tf.train.AdamOptimizer().minimize(G_loss_minimax_all, var_list=theta_G)
-    G_solver_ls = tf.train.AdamOptimizer().minimize(G_loss_ls_all, var_list=theta_G)
+    G_solver_logD = tf1.train.AdamOptimizer().minimize(G_loss_logD_all, var_list=theta_G)
+    G_solver_minimax = tf1.train.AdamOptimizer().minimize(G_loss_minimax_all, var_list=theta_G)
+    G_solver_ls = tf1.train.AdamOptimizer().minimize(G_loss_ls_all, var_list=theta_G)
 
     # Fitness function
     Fq_score = tf.reduce_mean((1 - M) * D_prob)
-    Fd_score = - tf.log(tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[0])))
+    Fd_score = - tf1.log(tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[0])))
                         + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[1])))
                         + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[2])))
                         + tf.reduce_sum(tf.square(tf.gradients(D_loss_temp, theta_D[3])))
@@ -156,7 +162,7 @@ def Egain(miss_data_x, gain_parameters):
 
     ## Iterations
 
-    sess = tf.Session()
+    sess = tf1.Session()
     # Start Iterations
 
     gen_new_params = []
@@ -167,7 +173,7 @@ def Egain(miss_data_x, gain_parameters):
         # Train candidates G
         if it == 0:
             for can_i in range(0, ncandi):
-                sess.run(tf.global_variables_initializer())
+                sess.run(tf1.global_variables_initializer())
                 batch_idx = sample_batch_index(no, batch_size)
                 X_mb = norm_data_x[batch_idx, :]
                 M_mb = m[batch_idx, :]

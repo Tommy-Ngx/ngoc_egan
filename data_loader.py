@@ -6,6 +6,8 @@ import numpy as np
 from utils import binary_sampler
 from scipy.io import arff
 from sklearn.preprocessing import LabelEncoder
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 # from keras.datasets import mnist
 
 
